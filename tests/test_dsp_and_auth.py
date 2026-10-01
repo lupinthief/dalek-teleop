@@ -49,7 +49,7 @@ def test_dalek_stream_dsp():
 
 def test_auth_and_session_tokens():
     # Password verification
-    assert verify_password("exterminate") is True
+    assert verify_password("communicate") is True
     assert verify_password("wrong-password") is False
 
     # Session token creation and validation

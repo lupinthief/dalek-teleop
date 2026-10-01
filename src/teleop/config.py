@@ -16,7 +16,7 @@ PORT = int(os.environ.get("DALEK_PORT", "8443"))
 USE_SSL = os.environ.get("DALEK_USE_SSL", "true").lower() in ("true", "1", "yes")
 
 # Security / Authentication
-PASSWORD = os.environ.get("DALEK_PASSWORD", "exterminate")
+PASSWORD = os.environ.get("DALEK_PASSWORD", "communicate")
 SESSION_SECRET = os.environ.get("DALEK_SESSION_SECRET", "dalek-teleop-secret-salt-key-2026")
 COOKIE_NAME = "dalek_session"
 MAX_LOGIN_ATTEMPTS = 5
