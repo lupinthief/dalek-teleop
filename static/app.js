@@ -7,6 +7,7 @@
 // State
 let peerConnection = null;
 let signalingSocket = null;
+let audioTransceiver = null;
 let localMediaStream = null;
 let audioContext = null;
 let localMeterNode = null;
@@ -144,7 +145,7 @@ async function connectComms() {
 
       // Prepare transceivers: receive video from camera and send/recv audio
       peerConnection.addTransceiver('video', { direction: 'recvonly' });
-      peerConnection.addTransceiver('audio', { direction: 'sendrecv' });
+      audioTransceiver = peerConnection.addTransceiver('audio', { direction: 'sendrecv' });
 
       // Handle incoming remote media tracks (Dalek camera + Dalek room microphone)
       peerConnection.ontrack = (event) => {
@@ -227,6 +228,7 @@ function disconnectComms() {
   if (peerConnection) {
     peerConnection.close();
     peerConnection = null;
+    audioTransceiver = null;
   }
 
   cameraFeed.srcObject = null;
@@ -265,14 +267,15 @@ async function startTransmitting() {
     setupAudioContext();
 
     const audioTrack = localMediaStream.getAudioTracks()[0];
-    const senders = peerConnection.getSenders();
-    const audioSender = senders.find(s => s.track && s.track.kind === 'audio') ||
-                        senders.find(s => !s.track || s.track.kind === 'audio');
-
-    if (audioSender) {
-      await audioSender.replaceTrack(audioTrack);
+    if (audioTransceiver && audioTransceiver.sender) {
+      await audioTransceiver.sender.replaceTrack(audioTrack);
     } else {
-      peerConnection.addTrack(audioTrack, localMediaStream);
+      const audioSender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+      if (audioSender) {
+        await audioSender.replaceTrack(audioTrack);
+      } else {
+        peerConnection.addTrack(audioTrack, localMediaStream);
+      }
     }
 
     isTransmitting = true;
@@ -296,11 +299,9 @@ async function stopTransmitting() {
   micMuteBtn.disabled = true;
 
   if (peerConnection) {
-    const senders = peerConnection.getSenders();
-    const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
-    if (audioSender) {
+    if (audioTransceiver && audioTransceiver.sender) {
       try {
-        await audioSender.replaceTrack(null);
+        await audioTransceiver.sender.replaceTrack(null);
       } catch (e) {}
     }
   }
