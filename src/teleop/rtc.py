@@ -45,7 +45,7 @@ class DalekMicrophoneTrack(MediaStreamTrack):
         pcm_int16 = (np.clip(pcm_float, -1.0, 1.0) * 32767.0).astype(np.int16)
         
         # Package into PyAV AudioFrame
-        frame = AudioFrame(format="s16", layout="mono", samples=len(pcm_int16))
+        frame = av.AudioFrame(format="s16", layout="mono", samples=len(pcm_int16))
         frame.planes[0].update(pcm_int16.tobytes())
         frame.sample_rate = config.SAMPLE_RATE
         frame.pts = self._timestamp

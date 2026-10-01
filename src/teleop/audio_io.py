@@ -134,15 +134,18 @@ class AudioCapture:
                     pcm_float = pcm_int16.astype(np.float32) / 32768.0
 
                     if self._loop and self._loop.is_running():
-                        for queue in list(self._subscribers):
-                            try:
-                                self._loop.call_soon_threadsafe(queue.put_nowait, pcm_float)
-                            except asyncio.QueueFull:
+                        def _push_to_queues(frame):
+                            for queue in list(self._subscribers):
                                 try:
-                                    queue.get_nowait()
-                                    queue.put_nowait(pcm_float)
-                                except Exception:
-                                    pass
+                                    queue.put_nowait(frame)
+                                except asyncio.QueueFull:
+                                    try:
+                                        queue.get_nowait()
+                                        queue.put_nowait(frame)
+                                    except Exception:
+                                        pass
+
+                        self._loop.call_soon_threadsafe(_push_to_queues, pcm_float)
             data = yield
 
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
