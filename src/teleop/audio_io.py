@@ -15,6 +15,7 @@ Handles:
 import asyncio
 import collections
 import logging
+import threading
 from typing import Optional
 import miniaudio
 import numpy as np
@@ -25,33 +26,32 @@ logger = logging.getLogger("teleop.audio")
 
 
 class AudioPlayer:
-    """Streams 48kHz float32 audio frames out to the default speaker sink."""
+    """Streams 48kHz audio frames out to the default speaker sink with continuous buffering."""
 
-    def __init__(self, sample_rate: int = config.SAMPLE_RATE, max_buffer_frames: int = 8):
+    def __init__(self, sample_rate: int = config.SAMPLE_RATE, max_buffer_msec: int = 250):
         self.sample_rate = sample_rate
-        self.buffer = collections.deque(maxlen=max_buffer_frames)
+        self.max_buffer_bytes = int(sample_rate * (max_buffer_msec / 1000.0) * 2)  # 250ms = 24,000 bytes
+        self.buffer = bytearray()
+        self.lock = threading.Lock()
         self.device: Optional[miniaudio.PlaybackDevice] = None
         self._running = False
-        self._silence_int16 = bytes(config.FRAME_SAMPLES * 2)  # 16-bit mono silence
 
     def _stream_generator(self):
-        """Generator yielding PCM 16-bit bytes to miniaudio playback device."""
-        # Prime generator for first .send(num_frames)
+        """Generator yielding continuous PCM 16-bit bytes to miniaudio playback device."""
         num_frames = yield b""
         while self._running:
             needed_bytes = (num_frames if num_frames else config.FRAME_SAMPLES) * 2
-            if self.buffer:
-                frame_bytes = self.buffer.popleft()
-                if len(frame_bytes) < needed_bytes:
-                    frame_bytes = frame_bytes + bytes(needed_bytes - len(frame_bytes))
-                elif len(frame_bytes) > needed_bytes:
-                    # Put remainder back
-                    remainder = frame_bytes[needed_bytes:]
-                    frame_bytes = frame_bytes[:needed_bytes]
-                    self.buffer.appendleft(remainder)
-                num_frames = yield frame_bytes
-            else:
-                num_frames = yield bytes(needed_bytes)
+            with self.lock:
+                avail = len(self.buffer)
+                if avail >= needed_bytes:
+                    chunk = bytes(self.buffer[:needed_bytes])
+                    del self.buffer[:needed_bytes]
+                elif avail > 0:
+                    chunk = bytes(self.buffer) + bytes(needed_bytes - avail)
+                    self.buffer.clear()
+                else:
+                    chunk = bytes(needed_bytes)
+            num_frames = yield chunk
 
     def start(self):
         if self._running:
@@ -62,6 +62,7 @@ class AudioPlayer:
                 output_format=miniaudio.SampleFormat.SIGNED16,
                 nchannels=1,
                 sample_rate=self.sample_rate,
+                buffersize_msec=40,
             )
             self._running = True
             gen = self._stream_generator()
@@ -73,14 +74,24 @@ class AudioPlayer:
             self._running = True
 
     def write(self, frame: np.ndarray):
-        """Queue a 20 ms float32 frame in [-1.0, 1.0] for output."""
+        """Queue audio frame for continuous output."""
         if not self._running:
             return
         if frame.ndim > 1:
             frame = frame.flatten()
-        # Convert float32 in [-1.0, 1.0] to signed 16-bit PCM bytes
-        pcm_int16 = (np.clip(frame, -1.0, 1.0) * 32767.0).astype(np.int16)
-        self.buffer.append(pcm_int16.tobytes())
+        if frame.dtype != np.int16:
+            # float in [-1.0, 1.0] -> signed 16-bit PCM
+            pcm_int16 = (np.clip(frame, -1.0, 1.0) * 32767.0).astype(np.int16)
+        else:
+            pcm_int16 = frame
+        data = pcm_int16.tobytes()
+
+        with self.lock:
+            # If buffer exceeds max limit (250ms), drop oldest data to avoid lag
+            if len(self.buffer) + len(data) > self.max_buffer_bytes:
+                excess = (len(self.buffer) + len(data)) - self.max_buffer_bytes
+                del self.buffer[:excess]
+            self.buffer.extend(data)
 
     def stop(self):
         self._running = False
@@ -91,7 +102,8 @@ class AudioPlayer:
             except Exception:
                 pass
             self.device = None
-        self.buffer.clear()
+        with self.lock:
+            self.buffer.clear()
 
 
 class AudioCapture:

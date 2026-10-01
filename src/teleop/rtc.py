@@ -5,8 +5,8 @@ import fractions
 import logging
 import time
 from typing import Optional, Set
+import av
 import numpy as np
-from av import AudioFrame
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.rtcrtpreceiver import RemoteStreamTrack
 
@@ -88,31 +88,21 @@ class PeerSession:
         self.pc.addTrack(self.mic_track)
 
     async def _process_incoming_audio(self, track: RemoteStreamTrack):
-        """Continuously decode incoming phone voice, run DalekStream DSP, and play out."""
+        """Continuously decode incoming phone voice, normalize audio, and stream to speaker."""
         logger.info("Starting incoming phone audio processing pipeline...")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=config.SAMPLE_RATE)
         try:
             while True:
                 frame = await track.recv()
-                # Frame is an av.AudioFrame
-                # Convert to numpy float32 in [-1.0, 1.0]
-                pcm = frame.to_ndarray()
-                if pcm.dtype == np.int16:
-                    audio_float = pcm.astype(np.float32) / 32768.0
-                else:
-                    audio_float = pcm.astype(np.float32)
-
-                # Ensure 1D mono
-                if audio_float.ndim > 1:
-                    audio_float = audio_float[0]
-
-                # Run through the Dalek ring modulator & biquad filters if enabled
-                if config.ENABLE_MODULATION:
-                    output_audio = self.dsp.process(audio_float)
-                else:
-                    output_audio = audio_float
-
-                # Send to speakers
-                self.player.write(output_audio)
+                # Resample and normalize to 48kHz mono signed 16-bit PCM
+                for resampled_frame in resampler.resample(frame):
+                    pcm_int16 = resampled_frame.to_ndarray().flatten()
+                    if config.ENABLE_MODULATION:
+                        audio_float = pcm_int16.astype(np.float32) / 32768.0
+                        modulated = self.dsp.process(audio_float)
+                        self.player.write(modulated)
+                    else:
+                        self.player.write(pcm_int16)
 
         except asyncio.CancelledError:
             pass
