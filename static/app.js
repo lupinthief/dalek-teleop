@@ -11,6 +11,7 @@ let audioContext = null;
 let localMeterNode = null;
 let remoteMeterNode = null;
 let meterAnimationId = null;
+let wakeLock = null;
 let isMuted = false;
 let isConnected = false;
 
@@ -169,6 +170,7 @@ async function connectCall() {
       };
 
       peerConnection.onconnectionstatechange = () => {
+        console.log('PeerConnection state:', peerConnection.connectionState);
         if (peerConnection.connectionState === 'connected') {
           isConnected = true;
           setConnectionStatus('CONNECTED', 'connected');
@@ -176,7 +178,8 @@ async function connectCall() {
           callToggleBtn.className = 'giant-call-btn state-connected';
           callToggleBtn.disabled = false;
           micMuteBtn.disabled = false;
-        } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+          acquireWakeLock();
+        } else if (peerConnection.connectionState === 'failed') {
           disconnectCall();
         }
       };
@@ -245,9 +248,40 @@ function disconnectCall() {
     meterAnimationId = null;
   }
 
+  releaseWakeLock();
+
   outboundMeterFill.style.width = '0%';
   inboundMeterFill.style.width = '0%';
 }
+
+// ------------------------------------------------------------------ Screen Wake Lock
+async function acquireWakeLock() {
+  if ('wakeLock' in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        wakeLock = null;
+      });
+      console.log('Screen WakeLock active - screen will remain awake during call.');
+    } catch (err) {
+      console.warn('Screen WakeLock request failed:', err);
+    }
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+}
+
+// Re-request wake lock if tab is focused again while connected
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && isConnected && !wakeLock) {
+    await acquireWakeLock();
+  }
+});
 
 
 // ------------------------------------------------------------------ Mic Mute Toggle

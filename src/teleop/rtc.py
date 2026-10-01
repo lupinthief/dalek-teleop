@@ -74,7 +74,7 @@ class PeerSession:
         @pc.on("connectionstatechange")
         async def on_state_change():
             logger.info("WebRTC connection state: %s", pc.connectionState)
-            if pc.connectionState in ("failed", "closed"):
+            if pc.connectionState == "failed":
                 await self.close()
 
         @pc.on("track")
