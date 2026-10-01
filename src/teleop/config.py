@@ -27,6 +27,9 @@ SAMPLE_RATE = 48000
 FRAME_MS = 20
 FRAME_SAMPLES = int(SAMPLE_RATE * (FRAME_MS / 1000.0))  # 960 samples per frame
 
+# Audio Modulation Bypass (disabled by default so audio is clean passthrough; davros handles its own modulation)
+ENABLE_MODULATION = os.environ.get("DALEK_ENABLE_MODULATION", "false").lower() in ("true", "1", "yes")
+
 # Effect Defaults (matched to davros phone.py / dalek.py)
 MOD_FREQ = float(os.environ.get("DALEK_MOD_FREQ", "30.0"))     # Ring modulator carrier in Hz
 MIX = float(os.environ.get("DALEK_MOD_MIX", "1.0"))            # 1.0 = fully wet

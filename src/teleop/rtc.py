@@ -105,11 +105,14 @@ class PeerSession:
                 if audio_float.ndim > 1:
                     audio_float = audio_float[0]
 
-                # Run through the Dalek ring modulator & biquad filters
-                modulated = self.dsp.process(audio_float)
+                # Run through the Dalek ring modulator & biquad filters if enabled
+                if config.ENABLE_MODULATION:
+                    output_audio = self.dsp.process(audio_float)
+                else:
+                    output_audio = audio_float
 
-                # Send to Dalek speakers
-                self.player.write(modulated)
+                # Send to speakers
+                self.player.write(output_audio)
 
         except asyncio.CancelledError:
             pass
