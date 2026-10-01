@@ -79,6 +79,18 @@ loginBtn.addEventListener('click', async () => {
   const password = passwordInput.value;
   if (!password) return;
 
+  // Unlock audio playback immediately on user tap so incoming audio is allowed to play
+  if (remoteAudio) {
+    remoteAudio.play().catch(() => {});
+  }
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!audioContext) {
+    audioContext = new AudioContextClass();
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().catch(() => {});
+    }
+  }
+
   loginBtn.disabled = true;
   loginBtn.innerText = 'AUTHORIZING...';
   authError.classList.add('hidden');
@@ -157,9 +169,12 @@ async function connectComms() {
           liveDot.classList.add('active');
         } else if (event.track.kind === 'audio') {
           console.log('Received Dalek room audio track');
-          remoteAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
-          remoteAudio.play().catch(e => console.log('Autoplay remote audio:', e));
-          hookRemoteAudioMeter(event.streams[0] || new MediaStream([event.track]));
+          const stream = event.streams[0] || new MediaStream([event.track]);
+          remoteAudio.srcObject = stream;
+          remoteAudio.play().catch(e => {
+            console.log('Audio autoplay blocked by mobile browser until user tap:', e);
+          });
+          hookRemoteAudioMeter(stream);
         }
       };
 
@@ -238,6 +253,11 @@ function disconnectComms() {
 
 // ------------------------------------------------------------------ Voice Transmit Toggle
 callToggleBtn.addEventListener('click', async () => {
+  // Ensure remote audio playback is unlocked on user interaction (required by iOS Safari/Chrome autoplay policy)
+  if (remoteAudio && remoteAudio.paused) {
+    remoteAudio.play().catch(e => console.log('Unlock remote audio:', e));
+  }
+
   if (isTransmitting) {
     stopTransmitting();
   } else {
