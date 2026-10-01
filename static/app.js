@@ -12,6 +12,7 @@ let localMeterNode = null;
 let remoteMeterNode = null;
 let meterAnimationId = null;
 let wakeLock = null;
+let noSleep = null;
 let isMuted = false;
 let isConnected = false;
 
@@ -121,6 +122,8 @@ callToggleBtn.addEventListener('click', () => {
   if (isConnected) {
     disconnectCall();
   } else {
+    // MUST trigger screen keepalive inside the direct user click handler
+    enableScreenKeepAlive();
     connectCall();
   }
 });
@@ -178,7 +181,6 @@ async function connectCall() {
           callToggleBtn.className = 'giant-call-btn state-connected';
           callToggleBtn.disabled = false;
           micMuteBtn.disabled = false;
-          acquireWakeLock();
         } else if (peerConnection.connectionState === 'failed') {
           disconnectCall();
         }
@@ -248,38 +250,56 @@ function disconnectCall() {
     meterAnimationId = null;
   }
 
-  releaseWakeLock();
+  disableScreenKeepAlive();
 
   outboundMeterFill.style.width = '0%';
   inboundMeterFill.style.width = '0%';
 }
 
-// ------------------------------------------------------------------ Screen Wake Lock
-async function acquireWakeLock() {
-  if ('wakeLock' in navigator) {
+// ------------------------------------------------------------------ Screen Keep-Alive (WakeLock + NoSleep Fallback)
+function enableScreenKeepAlive() {
+  // 1. NoSleep.js (works universally on iOS Safari & Android Chrome by playing micro-video)
+  if (window.NoSleep && !noSleep) {
     try {
-      wakeLock = await navigator.wakeLock.request('screen');
+      noSleep = new window.NoSleep();
+      noSleep.enable();
+      console.log('NoSleep.js keep-alive enabled.');
+    } catch (e) {
+      console.warn('NoSleep.js failed to enable:', e);
+    }
+  }
+
+  // 2. Native Screen WakeLock API
+  if ('wakeLock' in navigator && !wakeLock) {
+    navigator.wakeLock.request('screen').then(wl => {
+      wakeLock = wl;
       wakeLock.addEventListener('release', () => {
         wakeLock = null;
       });
-      console.log('Screen WakeLock active - screen will remain awake during call.');
-    } catch (err) {
-      console.warn('Screen WakeLock request failed:', err);
-    }
+      console.log('Native Screen WakeLock active.');
+    }).catch(err => {
+      console.warn('Native Screen WakeLock request failed:', err);
+    });
   }
 }
 
-function releaseWakeLock() {
+function disableScreenKeepAlive() {
   if (wakeLock) {
     wakeLock.release().catch(() => {});
     wakeLock = null;
   }
+  if (noSleep) {
+    try {
+      noSleep.disable();
+    } catch (e) {}
+    noSleep = null;
+  }
 }
 
 // Re-request wake lock if tab is focused again while connected
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && isConnected && !wakeLock) {
-    await acquireWakeLock();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && isConnected) {
+    enableScreenKeepAlive();
   }
 });
 
