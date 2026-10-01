@@ -222,8 +222,19 @@ def main():
 
     logger.info("=" * 60)
     logger.info("DALEK TELEOP SERVICE STARTING")
-    logger.info("Listening on %s://%s:%d", proto, config.HOST, config.PORT)
-    logger.info("Open on smartphone browser: %s://<your-ip>:%d", proto, config.PORT)
+    logger.info("Server bound to %s://%s:%d", proto, config.HOST, config.PORT)
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        logger.info(">>> OPEN ON PHONE: %s://%s:%d <<<", proto, local_ip, config.PORT)
+        logger.info("(IMPORTANT: Must include %s:// in your mobile browser address)", proto)
+        logger.info("(Tap 'Advanced' -> 'Proceed' when self-signed certificate warning appears)")
+    except Exception:
+        logger.info("Open on smartphone browser: %s://<your-ip>:%d", proto, config.PORT)
     logger.info("=" * 60)
 
     web.run_app(
