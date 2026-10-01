@@ -7,12 +7,13 @@ import time
 from typing import Optional, Set
 import av
 import numpy as np
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, VideoStreamTrack
 from aiortc.rtcrtpreceiver import RemoteStreamTrack
 
 from teleop import config
 from teleop.dsp import DalekStream
 from teleop.audio_io import AudioPlayer, AudioCapture
+from teleop.camera import CameraManager
 
 logger = logging.getLogger("teleop.rtc")
 
@@ -59,15 +60,35 @@ class DalekMicrophoneTrack(MediaStreamTrack):
         self.capture.unsubscribe(self.queue)
 
 
+class DalekCameraTrack(VideoStreamTrack):
+    """VideoStreamTrack that streams the Dalek's physical camera back to the phone."""
+
+    kind = "video"
+
+    def __init__(self, camera: CameraManager):
+        super().__init__()
+        self.camera = camera
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        frame = self.camera.get_frame()
+        video_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
+        video_frame.pts = pts
+        video_frame.time_base = time_base
+        return video_frame
+
+
 class PeerSession:
     """Manages an active WebRTC PeerConnection session with an operator phone."""
 
-    def __init__(self, pc: RTCPeerConnection, player: AudioPlayer, capture: AudioCapture):
+    def __init__(self, pc: RTCPeerConnection, player: AudioPlayer, capture: AudioCapture, camera: CameraManager):
         self.pc = pc
         self.player = player
         self.capture = capture
+        self.camera = camera
         self.dsp = DalekStream()
         self.mic_track: Optional[DalekMicrophoneTrack] = None
+        self.camera_track: Optional[DalekCameraTrack] = None
         self.connected_at = time.time()
         self._audio_pump_task: Optional[asyncio.Task] = None
 
@@ -86,6 +107,10 @@ class PeerSession:
         # Add Dalek mic track so operator can hear through the phone
         self.mic_track = DalekMicrophoneTrack(capture)
         self.pc.addTrack(self.mic_track)
+
+        # Add Dalek camera track so operator sees live webcam feed
+        self.camera_track = DalekCameraTrack(camera)
+        self.pc.addTrack(self.camera_track)
 
     async def _process_incoming_audio(self, track: RemoteStreamTrack):
         """Continuously decode incoming phone voice, normalize audio, and stream to speaker."""
@@ -114,5 +139,7 @@ class PeerSession:
             self._audio_pump_task.cancel()
         if self.mic_track:
             self.mic_track.stop()
+        if self.camera_track:
+            self.camera_track.stop()
         await self.pc.close()
         logger.info("PeerSession closed.")

@@ -225,18 +225,17 @@ h2 {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: 8px;
 }
 
 .meter-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .meter-label {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.5px;
   color: var(--text-muted);
@@ -244,9 +243,9 @@ h2 {
 
 .meter-bar {
   width: 100%;
-  height: 10px;
+  height: 8px;
   background-color: #111216;
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
   border: 1px solid #23252d;
 }
@@ -255,106 +254,122 @@ h2 {
   width: 0%;
   height: 100%;
   background: linear-gradient(90deg, var(--accent-green), var(--accent-gold), var(--accent-red));
-  border-radius: 6px;
+  border-radius: 4px;
   transition: width 0.08s ease-out;
 }
 
-/* Telemetry Grid */
-.telemetry-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+/* Dashboard Layout */
+.dashboard-card {
+  padding: 14px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
+}
+
+/* Video Feed Container */
+.video-panel {
+  flex: 1;
+  min-height: 200px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.video-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  background-color: #000;
+  border: 1px solid var(--surface-border);
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#camera-feed {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background-color: #000;
+}
+
+.video-overlay-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background-color: rgba(13, 14, 18, 0.75);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-main);
+  z-index: 5;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--accent-red);
+  box-shadow: 0 0 6px var(--accent-red);
+  display: inline-block;
+}
+
+.live-dot.active {
+  background-color: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+  animation: pulse-glow 1.5s infinite;
+}
+
+/* Bottom Controls Area */
+.bottom-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.controls-row {
+  display: flex;
   gap: 8px;
   width: 100%;
-  margin-bottom: 24px;
 }
 
-.telemetry-item {
-  background-color: #131418;
-  border: 1px solid #22252c;
-  border-radius: 8px;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-}
-
-.t-label {
-  font-size: 0.65rem;
-  color: var(--text-muted);
-  font-weight: 700;
-}
-
-.t-val {
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--text-main);
-  margin-top: 2px;
-}
-
-.active-val {
-  color: var(--accent-cyan);
-}
-
-/* Big Call Toggle Button */
-.call-action-zone {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  margin-bottom: 20px;
-}
-
-.giant-call-btn {
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  border: 4px solid var(--accent-gold);
-  background: radial-gradient(circle, #25231a 0%, #161510 100%);
-  color: var(--accent-gold);
-  box-shadow: 0 0 25px rgba(229, 169, 59, 0.3);
-  cursor: pointer;
-  transition: all 0.25s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.giant-call-btn:active {
-  transform: scale(0.95);
-}
-
-.giant-call-btn.state-connected {
-  border-color: var(--accent-red);
-  background: radial-gradient(circle, #2d1317 0%, #170a0c 100%);
-  color: var(--accent-red);
-  box-shadow: 0 0 30px rgba(255, 51, 75, 0.4);
-}
-
-.btn-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  text-align: center;
-}
-
-.btn-icon {
-  font-size: 2.8rem;
-}
-
-.btn-text {
-  font-size: 0.85rem;
-  font-weight: 800;
-  letter-spacing: 1px;
-}
-
-/* Sub-controls */
-.sub-controls {
-  width: 100%;
-  display: flex;
-  gap: 10px;
-}
-
-.sub-controls .btn {
+.controls-row .btn {
   flex: 1;
+  padding: 12px 6px;
+  font-size: 0.85rem;
+}
+
+.transmit-btn {
+  background: linear-gradient(135deg, #e5a93b, #c48b25);
+  color: #111;
+}
+
+.transmit-btn.transmitting {
+  background: linear-gradient(135deg, #ff334b, #d91b33);
+  color: #fff;
+  box-shadow: 0 0 16px rgba(255, 51, 75, 0.4);
+  animation: transmit-glow 1.8s infinite;
+}
+
+@keyframes transmit-glow {
+  0% { box-shadow: 0 0 8px rgba(255, 51, 75, 0.4); }
+  50% { box-shadow: 0 0 20px rgba(255, 51, 75, 0.8); }
+  100% { box-shadow: 0 0 8px rgba(255, 51, 75, 0.4); }
 }
 
 /* Footer */

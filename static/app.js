@@ -1,6 +1,7 @@
 /**
  * Dalek Teleoperation WebRTC Client
- * Manages operator login, microphone capture, WebRTC signaling, and live visual VU meters.
+ * Manages operator login, live webcam video feed, full-duplex room audio,
+ * push-to-transmit phone voice, and live visual audio meters.
  */
 
 // State
@@ -14,6 +15,7 @@ let meterAnimationId = null;
 let wakeLock = null;
 let noSleep = null;
 let isMuted = false;
+let isTransmitting = false;
 let isConnected = false;
 
 // DOM Elements
@@ -25,7 +27,12 @@ const authError = document.getElementById('auth-error');
 const connectionChip = document.getElementById('connection-chip');
 const stalkLight = document.getElementById('stalk-light');
 
+const cameraFeed = document.getElementById('camera-feed');
+const videoStatusText = document.getElementById('video-status-text');
+const liveDot = document.getElementById('live-dot');
+
 const callToggleBtn = document.getElementById('call-toggle-btn');
+const callBtnIcon = document.getElementById('call-btn-icon');
 const callBtnText = document.getElementById('call-btn-text');
 const micMuteBtn = document.getElementById('mic-mute-btn');
 const muteIcon = document.getElementById('mute-icon');
@@ -53,6 +60,7 @@ async function checkAuthStatus() {
 }
 
 function showLogin() {
+  disconnectComms();
   authView.classList.remove('hidden');
   dashboardView.classList.add('hidden');
   setConnectionStatus('DISCONNECTED', '');
@@ -61,7 +69,9 @@ function showLogin() {
 function showDashboard() {
   authView.classList.add('hidden');
   dashboardView.classList.remove('hidden');
-  setConnectionStatus('READY', '');
+  setConnectionStatus('INITIALIZING...', 'connecting');
+  // Connect WebRTC automatically so live video feed starts immediately after auth
+  connectComms();
 }
 
 loginBtn.addEventListener('click', async () => {
@@ -97,9 +107,7 @@ loginBtn.addEventListener('click', async () => {
 });
 
 logoutBtn.addEventListener('click', async () => {
-  if (isConnected) {
-    disconnectCall();
-  }
+  disconnectComms();
   await fetch('/api/logout', { method: 'POST' });
   showLogin();
 });
@@ -117,58 +125,40 @@ function setConnectionStatus(status, stateClass) {
 }
 
 
-// ------------------------------------------------------------------ WebRTC Audio Comms
-callToggleBtn.addEventListener('click', () => {
-  if (isConnected) {
-    disconnectCall();
-  } else {
-    // MUST trigger screen keepalive inside the direct user click handler
-    enableScreenKeepAlive();
-    connectCall();
-  }
-});
+// ------------------------------------------------------------------ WebRTC Comms (Video + Audio)
+async function connectComms() {
+  if (peerConnection) return;
 
-async function connectCall() {
   setConnectionStatus('CONNECTING...', 'connecting');
-  callBtnText.innerText = 'CONNECTING...';
-  callToggleBtn.disabled = true;
+  videoStatusText.innerText = 'CONNECTING FEED...';
+  liveDot.classList.remove('active');
 
   try {
-    // 1. Capture Phone Microphone with low latency & echo cancellation
-    localMediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        sampleRate: 48000,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false
-    });
-
-    // 2. Setup Web Audio Context for visual audio meter
-    setupAudioContext();
-
-    // 3. Connect to WebSocket Signaling
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     signalingSocket = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
     signalingSocket.onopen = async () => {
-      // 4. Initialize RTCPeerConnection
       peerConnection = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
 
-      // Add local phone audio track
-      localMediaStream.getAudioTracks().forEach(track => {
-        peerConnection.addTrack(track, localMediaStream);
-      });
+      // Prepare transceivers: receive video from camera and send/recv audio
+      peerConnection.addTransceiver('video', { direction: 'recvonly' });
+      peerConnection.addTransceiver('audio', { direction: 'sendrecv' });
 
-      // Listen for incoming Dalek microphone track
+      // Handle incoming remote media tracks (Dalek camera + Dalek room microphone)
       peerConnection.ontrack = (event) => {
-        if (event.track.kind === 'audio') {
-          remoteAudio.srcObject = event.streams[0];
-          hookRemoteAudioMeter(event.streams[0]);
+        if (event.track.kind === 'video') {
+          console.log('Received Dalek camera video track');
+          cameraFeed.srcObject = event.streams[0] || new MediaStream([event.track]);
+          cameraFeed.play().catch(e => console.log('Autoplay muted video:', e));
+          videoStatusText.innerText = 'LIVE OPTICAL FEED';
+          liveDot.classList.add('active');
+        } else if (event.track.kind === 'audio') {
+          console.log('Received Dalek room audio track');
+          remoteAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
+          remoteAudio.play().catch(e => console.log('Autoplay remote audio:', e));
+          hookRemoteAudioMeter(event.streams[0] || new MediaStream([event.track]));
         }
       };
 
@@ -177,16 +167,14 @@ async function connectCall() {
         if (peerConnection.connectionState === 'connected') {
           isConnected = true;
           setConnectionStatus('CONNECTED', 'connected');
-          callBtnText.innerText = 'END TRANSMISSION';
-          callToggleBtn.className = 'giant-call-btn state-connected';
-          callToggleBtn.disabled = false;
-          micMuteBtn.disabled = false;
         } else if (peerConnection.connectionState === 'failed') {
-          disconnectCall();
+          setConnectionStatus('RECONNECTING...', 'connecting');
+          disconnectComms();
+          setTimeout(connectComms, 2000);
         }
       };
 
-      // Create WebRTC Offer
+      // Create and send SDP Offer
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
 
@@ -209,23 +197,24 @@ async function connectCall() {
 
     signalingSocket.onerror = (err) => {
       console.error('Signaling socket error:', err);
-      disconnectCall();
+    };
+
+    signalingSocket.onclose = () => {
+      console.log('Signaling socket closed');
     };
 
   } catch (err) {
-    console.error('Error starting call:', err);
-    alert('Could not access microphone: ' + err.message);
-    disconnectCall();
+    console.error('Error starting WebRTC comms:', err);
+    videoStatusText.innerText = 'FEED ERROR';
   }
 }
 
-function disconnectCall() {
+function disconnectComms() {
+  stopTransmitting();
   isConnected = false;
-  callToggleBtn.disabled = false;
-  micMuteBtn.disabled = true;
-  callBtnText.innerText = 'TRANSMIT TO DALEK';
-  callToggleBtn.className = 'giant-call-btn state-call';
-  setConnectionStatus('READY', '');
+  setConnectionStatus('DISCONNECTED', '');
+  videoStatusText.innerText = 'STANDBY';
+  liveDot.classList.remove('active');
 
   if (signalingSocket) {
     try {
@@ -240,6 +229,82 @@ function disconnectCall() {
     peerConnection = null;
   }
 
+  cameraFeed.srcObject = null;
+  remoteAudio.srcObject = null;
+}
+
+
+// ------------------------------------------------------------------ Voice Transmit Toggle
+callToggleBtn.addEventListener('click', async () => {
+  if (isTransmitting) {
+    stopTransmitting();
+  } else {
+    // Enable keep-alive during active voice transmission
+    enableScreenKeepAlive();
+    await startTransmitting();
+  }
+});
+
+async function startTransmitting() {
+  if (!peerConnection) {
+    await connectComms();
+  }
+
+  try {
+    localMediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        sampleRate: 48000,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false
+    });
+
+    setupAudioContext();
+
+    const audioTrack = localMediaStream.getAudioTracks()[0];
+    const senders = peerConnection.getSenders();
+    const audioSender = senders.find(s => s.track && s.track.kind === 'audio') ||
+                        senders.find(s => !s.track || s.track.kind === 'audio');
+
+    if (audioSender) {
+      await audioSender.replaceTrack(audioTrack);
+    } else {
+      peerConnection.addTrack(audioTrack, localMediaStream);
+    }
+
+    isTransmitting = true;
+    callToggleBtn.classList.add('transmitting');
+    callBtnIcon.innerText = '🛑';
+    callBtnText.innerText = 'Stop';
+    micMuteBtn.disabled = false;
+
+  } catch (err) {
+    console.error('Error accessing microphone:', err);
+    alert('Could not access microphone: ' + err.message);
+    disableScreenKeepAlive();
+  }
+}
+
+async function stopTransmitting() {
+  isTransmitting = false;
+  callToggleBtn.classList.remove('transmitting');
+  callBtnIcon.innerText = '🎙️';
+  callBtnText.innerText = 'Transmit';
+  micMuteBtn.disabled = true;
+
+  if (peerConnection) {
+    const senders = peerConnection.getSenders();
+    const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+    if (audioSender) {
+      try {
+        await audioSender.replaceTrack(null);
+      } catch (e) {}
+    }
+  }
+
   if (localMediaStream) {
     localMediaStream.getTracks().forEach(t => t.stop());
     localMediaStream = null;
@@ -251,14 +316,30 @@ function disconnectCall() {
   }
 
   disableScreenKeepAlive();
-
   outboundMeterFill.style.width = '0%';
-  inboundMeterFill.style.width = '0%';
 }
 
-// ------------------------------------------------------------------ Screen Keep-Alive (WakeLock + NoSleep Fallback)
+
+// ------------------------------------------------------------------ Mic Mute Toggle
+micMuteBtn.addEventListener('click', () => {
+  if (!localMediaStream) return;
+  isMuted = !isMuted;
+  localMediaStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+
+  if (isMuted) {
+    muteIcon.innerText = '🔇';
+    muteText.innerText = 'Unmute';
+    micMuteBtn.style.backgroundColor = 'rgba(255, 51, 75, 0.2)';
+  } else {
+    muteIcon.innerText = '🎤';
+    muteText.innerText = 'Mute';
+    micMuteBtn.style.backgroundColor = '';
+  }
+});
+
+
+// ------------------------------------------------------------------ Screen Keep-Alive (NoSleep + WakeLock)
 function enableScreenKeepAlive() {
-  // 1. NoSleep.js (works universally on iOS Safari & Android Chrome by playing micro-video)
   if (window.NoSleep && !noSleep) {
     try {
       noSleep = new window.NoSleep();
@@ -269,7 +350,6 @@ function enableScreenKeepAlive() {
     }
   }
 
-  // 2. Native Screen WakeLock API
   if ('wakeLock' in navigator && !wakeLock) {
     navigator.wakeLock.request('screen').then(wl => {
       wakeLock = wl;
@@ -296,38 +376,19 @@ function disableScreenKeepAlive() {
   }
 }
 
-// Re-request wake lock if tab is focused again while connected
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && isConnected) {
+  if (document.visibilityState === 'visible' && isTransmitting) {
     enableScreenKeepAlive();
-  }
-});
-
-
-// ------------------------------------------------------------------ Mic Mute Toggle
-micMuteBtn.addEventListener('click', () => {
-  if (!localMediaStream) return;
-  isMuted = !isMuted;
-  localMediaStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
-
-  if (isMuted) {
-    muteIcon.innerText = '🔇';
-    muteText.innerText = 'Unmute Mic';
-    micMuteBtn.style.backgroundColor = 'rgba(255, 51, 75, 0.2)';
-  } else {
-    muteIcon.innerText = '🎤';
-    muteText.innerText = 'Mute Mic';
-    micMuteBtn.style.backgroundColor = '';
   }
 });
 
 
 // ------------------------------------------------------------------ Audio Meters
 function setupAudioContext() {
+  if (!localMediaStream) return;
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   audioContext = new AudioContextClass();
 
-  // Local mic analyser
   const localSource = audioContext.createMediaStreamSource(localMediaStream);
   localMeterNode = audioContext.createAnalyser();
   localMeterNode.fftSize = 256;
@@ -337,22 +398,26 @@ function setupAudioContext() {
 }
 
 function hookRemoteAudioMeter(stream) {
-  if (!audioContext) return;
   try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!audioContext) {
+      audioContext = new AudioContextClass();
+    }
     const remoteSource = audioContext.createMediaStreamSource(stream);
     remoteMeterNode = audioContext.createAnalyser();
     remoteMeterNode.fftSize = 256;
     remoteSource.connect(remoteMeterNode);
+    if (!meterAnimationId) {
+      updateAudioMeters();
+    }
   } catch (e) {
     console.warn('Could not hook remote audio meter:', e);
   }
 }
 
 function updateAudioMeters() {
-  if (!isConnected && !localMediaStream) return;
-
   // Read local peak
-  if (localMeterNode && !isMuted) {
+  if (localMeterNode && isTransmitting && !isMuted) {
     const pcmData = new Uint8Array(localMeterNode.frequencyBinCount);
     localMeterNode.getByteTimeDomainData(pcmData);
     let peak = 0;
@@ -383,6 +448,10 @@ function updateAudioMeters() {
 
   meterAnimationId = requestAnimationFrame(updateAudioMeters);
 }
+
+
+// Start checking auth status on page load
+checkAuthStatus();
 
 
 // Start checking auth status on page load

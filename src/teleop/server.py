@@ -18,6 +18,7 @@ from teleop.auth import (
     reset_failed_attempts,
 )
 from teleop.audio_io import AudioPlayer, AudioCapture
+from teleop.camera import CameraManager
 from teleop.rtc import PeerSession
 
 logging.basicConfig(
@@ -29,6 +30,7 @@ logger = logging.getLogger("teleop.server")
 # Global resources
 player = AudioPlayer()
 capture = AudioCapture()
+camera = CameraManager()
 active_sessions: set[PeerSession] = set()
 
 
@@ -134,7 +136,7 @@ async def handle_signaling_ws(request: web.Request):
 
     ice_servers = [RTCIceServer(urls=s["urls"]) for s in config.DEFAULT_ICE_SERVERS]
     pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
-    session = PeerSession(pc, player, capture)
+    session = PeerSession(pc, player, capture, camera)
     active_sessions.add(session)
 
     try:
@@ -176,19 +178,21 @@ async def handle_signaling_ws(request: web.Request):
 
 # ------------------------------------------------------------------ App Setup & Lifecycle
 async def on_startup(app: web.Application):
-    logger.info("Initializing audio hardware I/O...")
+    logger.info("Initializing audio and camera hardware I/O...")
     loop = asyncio.get_event_loop()
     player.start()
     capture.start(loop)
+    camera.start()
 
 
 async def on_cleanup(app: web.Application):
-    logger.info("Cleaning up active teleop sessions and audio devices...")
+    logger.info("Cleaning up active teleop sessions, camera, and audio devices...")
     for session in list(active_sessions):
         await session.close()
     active_sessions.clear()
     player.stop()
     capture.stop()
+    camera.stop()
 
 
 def create_app() -> web.Application:

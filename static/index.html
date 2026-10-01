@@ -47,65 +47,57 @@
       </section>
 
       <!-- 2. Active Comms Dashboard (Shown after Login) -->
-      <section id="dashboard-view" class="view-card hidden">
+      <section id="dashboard-view" class="view-card dashboard-card hidden">
         
-        <!-- Live Visual Audio Feedback / Meters -->
-        <div class="meters-container">
-          <div class="meter-block">
-            <span class="meter-label">PHONE MIC (YOU)</span>
-            <div class="meter-bar">
-              <div class="meter-fill" id="outbound-meter-fill"></div>
-            </div>
-          </div>
-
-          <div class="meter-block">
-            <span class="meter-label">DALEK EARS (ROOM)</span>
-            <div class="meter-bar">
-              <div class="meter-fill" id="inbound-meter-fill"></div>
+        <!-- Live Video Feed Container -->
+        <div class="video-panel">
+          <div class="video-wrapper">
+            <video id="camera-feed" autoplay playsinline muted></video>
+            <div class="video-overlay-badge" id="video-status-badge">
+              <span class="live-dot" id="live-dot"></span>
+              <span id="video-status-text">CONNECTING FEED...</span>
             </div>
           </div>
         </div>
 
-        <!-- Telemetry Info -->
-        <div class="telemetry-grid">
-          <div class="telemetry-item">
-            <span class="t-label">ENCRYPTION</span>
-            <span class="t-val">DTLS-SRTP</span>
-          </div>
-          <div class="telemetry-item">
-            <span class="t-label">CODEC</span>
-            <span class="t-val">OPUS 48kHz</span>
-          </div>
-          <div class="telemetry-item">
-            <span class="t-label">AUDIO MODE</span>
-            <span class="t-val">CLEAN PASSTHROUGH</span>
-          </div>
-          <div class="telemetry-item">
-            <span class="t-label">DOME SYNC</span>
-            <span class="t-val active-val">ENABLED</span>
-          </div>
-        </div>
+        <!-- Bottom Controls & Audio Feedback -->
+        <div class="bottom-panel">
 
-        <!-- Big Tactile Connect / Call Toggle Button -->
-        <div class="call-action-zone">
-          <button id="call-toggle-btn" class="giant-call-btn state-call">
-            <div class="btn-inner">
-              <span class="btn-icon">🎙️</span>
-              <span class="btn-text" id="call-btn-text">TRANSMIT TO DALEK</span>
+          <!-- Live Visual Audio Feedback / Meters -->
+          <div class="meters-container">
+            <div class="meter-block">
+              <span class="meter-label">PHONE MIC (YOU)</span>
+              <div class="meter-bar">
+                <div class="meter-fill" id="outbound-meter-fill"></div>
+              </div>
             </div>
-          </button>
-        </div>
 
-        <!-- Sub-controls (Mute, Disconnect/Logout) -->
-        <div class="sub-controls">
-          <button id="mic-mute-btn" class="btn secondary-btn" disabled>
-            <span id="mute-icon">🎤</span>
-            <span id="mute-text">Mute Mic</span>
-          </button>
+            <div class="meter-block">
+              <span class="meter-label">DALEK EARS (ROOM)</span>
+              <div class="meter-bar">
+                <div class="meter-fill" id="inbound-meter-fill"></div>
+              </div>
+            </div>
+          </div>
 
-          <button id="logout-btn" class="btn danger-btn">
-            Log Out
-          </button>
+          <!-- Bottom Action Buttons: Transmit, Mute, Log Out -->
+          <div class="controls-row">
+            <button id="call-toggle-btn" class="btn transmit-btn">
+              <span id="call-btn-icon">🎙️</span>
+              <span id="call-btn-text">Transmit</span>
+            </button>
+
+            <button id="mic-mute-btn" class="btn secondary-btn" disabled>
+              <span id="mute-icon">🎤</span>
+              <span id="mute-text">Mute</span>
+            </button>
+
+            <button id="logout-btn" class="btn danger-btn">
+              <span>🚪</span>
+              <span>Log Out</span>
+            </button>
+          </div>
+
         </div>
 
         <!-- Hidden remote audio element to play Pi microphone -->
