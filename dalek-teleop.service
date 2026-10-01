@@ -1,0 +1,17 @@
+[Unit]
+Description=Dalek WebRTC Teleoperation Service
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dalek-teleop
+Environment="DALEK_PASSWORD=exterminate"
+Environment="DALEK_PORT=8443"
+Environment="DALEK_USE_SSL=true"
+ExecStart=/home/pi/dalek-teleop/.venv/bin/python -m teleop.server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

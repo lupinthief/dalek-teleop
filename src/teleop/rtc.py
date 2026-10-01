@@ -1,0 +1,125 @@
+"""WebRTC PeerConnection and MediaTrack implementations using aiortc."""
+
+import asyncio
+import fractions
+import logging
+import time
+from typing import Optional, Set
+import numpy as np
+from av import AudioFrame
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.rtcrtpreceiver import RemoteStreamTrack
+
+from teleop import config
+from teleop.dsp import DalekStream
+from teleop.audio_io import AudioPlayer, AudioCapture
+
+logger = logging.getLogger("teleop.rtc")
+
+
+class DalekMicrophoneTrack(MediaStreamTrack):
+    """AudioStreamTrack that streams the Dalek's physical microphone back to the phone."""
+
+    kind = "audio"
+
+    def __init__(self, capture: AudioCapture):
+        super().__init__()
+        self.capture = capture
+        self.queue = capture.subscribe()
+        self._timestamp = 0
+        self._time_base = fractions.Fraction(1, config.SAMPLE_RATE)
+        self._start_time = None
+
+    async def recv(self):
+        if self.readyState != "live":
+            raise asyncio.CancelledError
+
+        # Read next 20 ms frame from microphone capture queue
+        try:
+            pcm_float = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            # Fallback to silence if microphone is quiet/stalled
+            pcm_float = np.zeros(config.FRAME_SAMPLES, dtype=np.float32)
+
+        # Convert float32 [-1.0, 1.0] to int16 for Opus packing
+        pcm_int16 = (np.clip(pcm_float, -1.0, 1.0) * 32767.0).astype(np.int16)
+        
+        # Package into PyAV AudioFrame
+        frame = AudioFrame(format="s16", layout="mono", samples=len(pcm_int16))
+        frame.planes[0].update(pcm_int16.tobytes())
+        frame.sample_rate = config.SAMPLE_RATE
+        frame.pts = self._timestamp
+        frame.time_base = self._time_base
+        self._timestamp += len(pcm_int16)
+
+        return frame
+
+    def stop(self):
+        super().stop()
+        self.capture.unsubscribe(self.queue)
+
+
+class PeerSession:
+    """Manages an active WebRTC PeerConnection session with an operator phone."""
+
+    def __init__(self, pc: RTCPeerConnection, player: AudioPlayer, capture: AudioCapture):
+        self.pc = pc
+        self.player = player
+        self.capture = capture
+        self.dsp = DalekStream()
+        self.mic_track: Optional[DalekMicrophoneTrack] = None
+        self.connected_at = time.time()
+        self._audio_pump_task: Optional[asyncio.Task] = None
+
+        @pc.on("connectionstatechange")
+        async def on_state_change():
+            logger.info("WebRTC connection state: %s", pc.connectionState)
+            if pc.connectionState in ("failed", "closed"):
+                await self.close()
+
+        @pc.on("track")
+        def on_track(track):
+            logger.info("Received incoming WebRTC track: %s (kind=%s)", track.id, track.kind)
+            if track.kind == "audio":
+                self._audio_pump_task = asyncio.create_task(self._process_incoming_audio(track))
+
+        # Add Dalek mic track so operator can hear through the phone
+        self.mic_track = DalekMicrophoneTrack(capture)
+        self.pc.addTrack(self.mic_track)
+
+    async def _process_incoming_audio(self, track: RemoteStreamTrack):
+        """Continuously decode incoming phone voice, run DalekStream DSP, and play out."""
+        logger.info("Starting incoming phone audio processing pipeline...")
+        try:
+            while True:
+                frame = await track.recv()
+                # Frame is an av.AudioFrame
+                # Convert to numpy float32 in [-1.0, 1.0]
+                pcm = frame.to_ndarray()
+                if pcm.dtype == np.int16:
+                    audio_float = pcm.astype(np.float32) / 32768.0
+                else:
+                    audio_float = pcm.astype(np.float32)
+
+                # Ensure 1D mono
+                if audio_float.ndim > 1:
+                    audio_float = audio_float[0]
+
+                # Run through the Dalek ring modulator & biquad filters
+                modulated = self.dsp.process(audio_float)
+
+                # Send to Dalek speakers
+                self.player.write(modulated)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.info("Incoming audio track ended or error: %s", e)
+
+    async def close(self):
+        if self._audio_pump_task and not self._audio_pump_task.done():
+            self._audio_pump_task.cancel()
+        if self.mic_track:
+            self.mic_track.stop()
+        await self.pc.close()
+        logger.info("PeerSession closed.")

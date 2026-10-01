@@ -1,0 +1,16 @@
+{
+  "short_name": "Dalek Teleop",
+  "name": "Dalek WebRTC Voice & Teleoperation",
+  "icons": [
+    {
+      "src": "/static/icon.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0d0e12",
+  "theme_color": "#121214",
+  "display": "standalone",
+  "orientation": "portrait"
+}

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#121214">
+  <title>Dalek Teleop Comms</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="manifest" href="/static/manifest.json">
+</head>
+<body>
+  <div id="app" class="app-container">
+
+    <!-- Header / Brand -->
+    <header class="app-header">
+      <div class="logo-badge">
+        <span class="stalk-indicator" id="stalk-light"></span>
+        <span class="title">DALEK TELEOP</span>
+      </div>
+      <div class="status-chip" id="connection-chip">DISCONNECTED</div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="content-panel">
+
+      <!-- 1. Password / PIN Lock View -->
+      <section id="auth-view" class="view-card">
+        <div class="card-icon">🔒</div>
+        <h2>AUTHENTICATION REQUIRED</h2>
+        <p class="subtitle">Enter operator credentials to establish direct neural bridge</p>
+        
+        <form id="login-form" class="auth-form" onsubmit="return false;">
+          <div class="input-group">
+            <input 
+              type="password" 
+              id="password-input" 
+              placeholder="Operator Password" 
+              autocomplete="current-password"
+              required 
+            />
+          </div>
+          <button type="submit" id="login-btn" class="btn primary-btn">
+            AUTHORIZE
+          </button>
+          <div id="auth-error" class="error-banner hidden"></div>
+        </form>
+      </section>
+
+      <!-- 2. Active Comms Dashboard (Shown after Login) -->
+      <section id="dashboard-view" class="view-card hidden">
+        
+        <!-- Live Visual Audio Feedback / Meters -->
+        <div class="meters-container">
+          <div class="meter-block">
+            <span class="meter-label">PHONE MIC (YOU)</span>
+            <div class="meter-bar">
+              <div class="meter-fill" id="outbound-meter-fill"></div>
+            </div>
+          </div>
+
+          <div class="meter-block">
+            <span class="meter-label">DALEK EARS (ROOM)</span>
+            <div class="meter-bar">
+              <div class="meter-fill" id="inbound-meter-fill"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Telemetry Info -->
+        <div class="telemetry-grid">
+          <div class="telemetry-item">
+            <span class="t-label">ENCRYPTION</span>
+            <span class="t-val">DTLS-SRTP</span>
+          </div>
+          <div class="telemetry-item">
+            <span class="t-label">CODEC</span>
+            <span class="t-val">OPUS 48kHz</span>
+          </div>
+          <div class="telemetry-item">
+            <span class="t-label">MODULATION</span>
+            <span class="t-val">30Hz SINE + TANH</span>
+          </div>
+          <div class="telemetry-item">
+            <span class="t-label">DOME SYNC</span>
+            <span class="t-val active-val">ENABLED</span>
+          </div>
+        </div>
+
+        <!-- Big Tactile Connect / Call Toggle Button -->
+        <div class="call-action-zone">
+          <button id="call-toggle-btn" class="giant-call-btn state-call">
+            <div class="btn-inner">
+              <span class="btn-icon">🎙️</span>
+              <span class="btn-text" id="call-btn-text">TRANSMIT TO DALEK</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Sub-controls (Mute, Disconnect/Logout) -->
+        <div class="sub-controls">
+          <button id="mic-mute-btn" class="btn secondary-btn" disabled>
+            <span id="mute-icon">🎤</span>
+            <span id="mute-text">Mute Mic</span>
+          </button>
+
+          <button id="logout-btn" class="btn danger-btn">
+            Log Out
+          </button>
+        </div>
+
+        <!-- Hidden remote audio element to play Pi microphone -->
+        <audio id="remote-audio" autoplay playsinline></audio>
+      </section>
+
+    </main>
+
+    <footer class="app-footer">
+      <span>Dalek Robotics Teleop v0.1 • WebRTC Direct</span>
+    </footer>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
