@@ -20,7 +20,14 @@ class CameraManager:
 
     def __init__(self, device_index: int = None, width: int = 640, height: int = 480, fps: int = 30):
         if device_index is None:
-            self.device_index = int(os.environ.get("DALEK_CAMERA_INDEX", "0"))
+            env_val = os.environ.get("DALEK_CAMERA_INDEX", "auto")
+            if env_val.lower() == "auto":
+                self.device_index = "auto"
+            else:
+                try:
+                    self.device_index = int(env_val)
+                except ValueError:
+                    self.device_index = "auto"
         else:
             self.device_index = device_index
         self.width = width
@@ -52,34 +59,63 @@ class CameraManager:
     def start(self):
         if self._running:
             return
+        if self.device_index == -1:
+            logger.info("Camera disabled via DALEK_CAMERA_INDEX=-1. Using test pattern.")
+            self._latest_frame = self._create_standby_frame("DALEK OPTICAL SENSOR", "CAMERA DISABLED")
+            return
         self._running = True
         self._thread = threading.Thread(target=self._capture_worker, name="camera-capture-thread", daemon=True)
         self._thread.start()
-        logger.info("CameraManager started background capture on device index %d.", self.device_index)
+        logger.info("CameraManager started background capture (device: %s).", self.device_index)
+
+    def _probe_camera(self) -> tuple[cv2.VideoCapture | None, int | None]:
+        """Try opening specified or auto-discovered camera index."""
+        candidates = []
+        if self.device_index == "auto":
+            # On Pi, webcam can be at 0, 1, 2, or 4
+            candidates = [0, 1, 2, 3, 4]
+        else:
+            candidates = [self.device_index]
+
+        for idx in candidates:
+            try:
+                cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                        cap.set(cv2.CAP_PROP_FPS, self.fps)
+                        return cap, idx
+                    cap.release()
+            except Exception:
+                pass
+        return None, None
 
     def _capture_worker(self):
         """Dedicated thread continuously pulling latest frames from camera."""
+        consecutive_failures = 0
         while self._running:
             try:
                 if self.cap is None or not self.cap.isOpened():
-                    logger.info("Opening video capture device %s...", self.device_index)
-                    cap = cv2.VideoCapture(self.device_index)
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                    cap.set(cv2.CAP_PROP_FPS, self.fps)
-
-                    if not cap.isOpened():
-                        logger.warning("Camera device %s could not be opened. Using standby test pattern.", self.device_index)
+                    cap, bound_idx = self._probe_camera()
+                    if cap is None:
+                        consecutive_failures += 1
+                        if consecutive_failures == 1:
+                            logger.warning("No working video capture device found. Using standby test pattern.")
                         with self._lock:
                             self._latest_frame = self._create_standby_frame("DALEK OPTICAL SENSOR", "STANDBY / NO CAMERA")
-                        time.sleep(2.0)
+                        time.sleep(5.0)  # Back off retry interval
                         continue
+
                     self.cap = cap
-                    logger.info("Camera device %s opened successfully (%dx%d @ %d FPS).", self.device_index, self.width, self.height, self.fps)
+                    consecutive_failures = 0
+                    logger.info("Camera device %s opened successfully (%dx%d @ %d FPS).", bound_idx, self.width, self.height, self.fps)
 
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
-                    # Ensure correct dimensions if camera returned different size
                     if frame.shape[1] != self.width or frame.shape[0] != self.height:
                         frame = cv2.resize(frame, (self.width, self.height))
                     with self._lock:
@@ -91,7 +127,7 @@ class CameraManager:
                 logger.error("Camera capture error: %s", e)
                 with self._lock:
                     self._latest_frame = self._create_standby_frame("DALEK OPTICAL SENSOR", "CAMERA READ ERROR")
-                time.sleep(1.0)
+                time.sleep(2.0)
 
     def get_frame(self) -> np.ndarray:
         """Get copy of the most recently captured BGR frame."""
