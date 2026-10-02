@@ -72,8 +72,8 @@ class CameraManager:
         """Try opening specified or auto-discovered camera index."""
         candidates = []
         if self.device_index == "auto":
-            # On Pi, webcam can be at 0, 1, 2, or 4
-            candidates = [0, 1, 2, 3, 4]
+            # On Pi with dalek-video-splitter, video3 is DalekTeleop loopback, falling back to 0, 1, 2, 4
+            candidates = [3, 0, 1, 2, 4]
         else:
             candidates = [self.device_index]
 
