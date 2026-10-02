@@ -56,21 +56,44 @@ class AudioPlayer:
     def start(self):
         if self._running:
             return
-        logger.info("Starting miniaudio AudioPlayer at %d Hz...", self.sample_rate)
-        try:
-            self.device = miniaudio.PlaybackDevice(
-                output_format=miniaudio.SampleFormat.SIGNED16,
-                nchannels=1,
-                sample_rate=self.sample_rate,
-                buffersize_msec=40,
-            )
+        logger.info("Starting AudioPlayer output stream (target sr=%d Hz)...", self.sample_rate)
+
+        # Probe backends in priority order: PulseAudio first (shares with Dalek ears), then ALSA, then auto
+        backend_candidates = [
+            ("PulseAudio", [miniaudio.Backend.PULSEAUDIO]),
+            ("ALSA", [miniaudio.Backend.ALSA]),
+            ("Default", None),
+        ]
+
+        device = None
+        for name, backends in backend_candidates:
+            # Try 1 channel then 2 channels (some ALSA drivers require stereo)
+            for ch in [1, 2]:
+                try:
+                    d = miniaudio.PlaybackDevice(
+                        output_format=miniaudio.SampleFormat.SIGNED16,
+                        nchannels=ch,
+                        sample_rate=self.sample_rate,
+                        buffersize_msec=50,
+                        backends=backends,
+                    )
+                    device = d
+                    logger.info("AudioPlayer initialized via %s (%s, %d ch, %d Hz).", name, d.backend, ch, self.sample_rate)
+                    break
+                except Exception as e:
+                    logger.debug("Playback attempt %s (%d ch) failed: %s", name, ch, e)
+            if device is not None:
+                break
+
+        if device is not None:
+            self.device = device
             self._running = True
             gen = self._stream_generator()
             next(gen)  # Prime generator
             self.device.start(gen)
-            logger.info("AudioPlayer playback device active via miniaudio.")
-        except Exception as e:
-            logger.warning("Could not initialize miniaudio playback device (%s). Playback will be mocked/logged.", e)
+            logger.info("AudioPlayer playback device active.")
+        else:
+            logger.warning("Could not initialize audio playback device. Playback will be mocked/logged.")
             self._running = True
 
     def write(self, frame: np.ndarray):
@@ -152,20 +175,43 @@ class AudioCapture:
         if self._running:
             return
         self._loop = loop or asyncio.get_event_loop()
-        logger.info("Starting miniaudio AudioCapture at %d Hz...", self.sample_rate)
-        try:
-            self.device = miniaudio.CaptureDevice(
-                input_format=miniaudio.SampleFormat.SIGNED16,
-                nchannels=1,
-                sample_rate=self.sample_rate,
-            )
+        logger.info("Starting AudioCapture microphone stream (target sr=%d Hz)...", self.sample_rate)
+
+        backend_candidates = [
+            ("PulseAudio", [miniaudio.Backend.PULSEAUDIO]),
+            ("ALSA", [miniaudio.Backend.ALSA]),
+            ("Default", None),
+        ]
+
+        device = None
+        for name, backends in backend_candidates:
+            # Try 1 channel then 2 channels (webcam mic or USB mic might require stereo)
+            for ch in [1, 2]:
+                try:
+                    d = miniaudio.CaptureDevice(
+                        input_format=miniaudio.SampleFormat.SIGNED16,
+                        nchannels=ch,
+                        sample_rate=self.sample_rate,
+                        buffersize_msec=50,
+                        backends=backends,
+                    )
+                    device = d
+                    logger.info("AudioCapture initialized via %s (%s, %d ch, %d Hz).", name, d.backend, ch, self.sample_rate)
+                    break
+                except Exception as e:
+                    logger.debug("Capture attempt %s (%d ch) failed: %s", name, ch, e)
+            if device is not None:
+                break
+
+        if device is not None:
+            self.device = device
             self._running = True
             gen = self._capture_generator()
             next(gen)  # Prime generator
             self.device.start(gen)
-            logger.info("AudioCapture recording active via miniaudio.")
-        except Exception as e:
-            logger.warning("Could not initialize miniaudio capture device (%s). Using synthetic silence.", e)
+            logger.info("AudioCapture recording active.")
+        else:
+            logger.warning("Could not initialize audio capture device. Using synthetic silence.")
             self._running = True
             self._loop.create_task(self._synthetic_silence_feed())
 
