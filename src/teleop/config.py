@@ -10,6 +10,10 @@ CERTS_DIR = BASE_DIR / "certs"
 CERT_FILE = Path(os.environ.get("DALEK_SSL_CERT", CERTS_DIR / "cert.pem"))
 KEY_FILE = Path(os.environ.get("DALEK_SSL_KEY", CERTS_DIR / "key.pem"))
 
+# Explicitly ensure XDG_RUNTIME_DIR is set for PulseAudio/PipeWire user socket access
+if "XDG_RUNTIME_DIR" not in os.environ and hasattr(os, "getuid"):
+    os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+
 # Network & Server
 HOST = os.environ.get("DALEK_HOST", "0.0.0.0")
 PORT = int(os.environ.get("DALEK_PORT", "8443"))

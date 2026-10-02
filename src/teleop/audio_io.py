@@ -30,6 +30,7 @@ class AudioPlayer:
 
     def __init__(self, sample_rate: int = config.SAMPLE_RATE, max_buffer_msec: int = 250):
         self.sample_rate = sample_rate
+        self.nchannels = 1
         self.max_buffer_bytes = int(sample_rate * (max_buffer_msec / 1000.0) * 2)  # 250ms = 24,000 bytes
         self.buffer = bytearray()
         self.lock = threading.Lock()
@@ -40,7 +41,7 @@ class AudioPlayer:
         """Generator yielding continuous PCM 16-bit bytes to miniaudio playback device."""
         num_frames = yield b""
         while self._running:
-            needed_bytes = (num_frames if num_frames else config.FRAME_SAMPLES) * 2
+            needed_bytes = (num_frames if num_frames else config.FRAME_SAMPLES) * 2 * self.nchannels
             with self.lock:
                 avail = len(self.buffer)
                 if avail >= needed_bytes:
@@ -58,7 +59,14 @@ class AudioPlayer:
             return
         logger.info("Starting AudioPlayer output stream (target sr=%d Hz)...", self.sample_rate)
 
-        # Probe backends in priority order: PulseAudio first (shares with Dalek ears), then ALSA, then auto
+        # Ensure runtime environment variables are set so PulseAudio/PipeWire user sockets connect cleanly
+        uid = os.getuid() if hasattr(os, "getuid") else 1000
+        if "XDG_RUNTIME_DIR" not in os.environ:
+            os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
+        if "PULSE_SERVER" not in os.environ and os.path.exists(f"/run/user/{uid}/pulse/native"):
+            os.environ["PULSE_SERVER"] = f"unix:/run/user/{uid}/pulse/native"
+
+        # Candidate backends: PulseAudio first, ALSA second, Default third
         backend_candidates = [
             ("PulseAudio", [miniaudio.Backend.PULSEAUDIO]),
             ("ALSA", [miniaudio.Backend.ALSA]),
@@ -66,9 +74,10 @@ class AudioPlayer:
         ]
 
         device = None
+        bound_ch = 1
         for name, backends in backend_candidates:
-            # Try 1 channel then 2 channels (some ALSA drivers require stereo)
-            for ch in [1, 2]:
+            # Try stereo first (broadest hardware compatibility on Pi/ALSA), then mono
+            for ch in [2, 1]:
                 try:
                     d = miniaudio.PlaybackDevice(
                         output_format=miniaudio.SampleFormat.SIGNED16,
@@ -78,6 +87,7 @@ class AudioPlayer:
                         backends=backends,
                     )
                     device = d
+                    bound_ch = ch
                     logger.info("AudioPlayer initialized via %s (%s, %d ch, %d Hz).", name, d.backend, ch, self.sample_rate)
                     break
                 except Exception as e:
@@ -87,6 +97,8 @@ class AudioPlayer:
 
         if device is not None:
             self.device = device
+            self.nchannels = bound_ch
+            self.max_buffer_bytes = int(self.sample_rate * (250 / 1000.0) * 2 * self.nchannels)
             self._running = True
             gen = self._stream_generator()
             next(gen)  # Prime generator
@@ -107,6 +119,11 @@ class AudioPlayer:
             pcm_int16 = (np.clip(frame, -1.0, 1.0) * 32767.0).astype(np.int16)
         else:
             pcm_int16 = frame
+
+        # If audio device opened in stereo, duplicate mono to both channels
+        if self.nchannels == 2:
+            pcm_int16 = np.repeat(pcm_int16, 2)
+
         data = pcm_int16.tobytes()
 
         with self.lock:
@@ -134,6 +151,7 @@ class AudioCapture:
 
     def __init__(self, sample_rate: int = config.SAMPLE_RATE):
         self.sample_rate = sample_rate
+        self.nchannels = 1
         self.device: Optional[miniaudio.CaptureDevice] = None
         self._running = False
         self._subscribers = set()
@@ -147,13 +165,17 @@ class AudioCapture:
         while self._running:
             if data:
                 self._partial_buffer.extend(data)
-                bytes_per_frame = self._chunk_samples * 2  # 16-bit mono
+                bytes_per_frame = self._chunk_samples * 2 * self.nchannels  # 16-bit mono or stereo
 
                 while len(self._partial_buffer) >= bytes_per_frame:
                     frame_bytes = bytes(self._partial_buffer[:bytes_per_frame])
                     del self._partial_buffer[:bytes_per_frame]
 
                     pcm_int16 = np.frombuffer(frame_bytes, dtype=np.int16)
+                    # If captured in stereo, average channels to mono for WebRTC transmission
+                    if self.nchannels == 2:
+                        pcm_int16 = ((pcm_int16[0::2].astype(np.int32) + pcm_int16[1::2].astype(np.int32)) // 2).astype(np.int16)
+
                     pcm_float = pcm_int16.astype(np.float32) / 32768.0
 
                     if self._loop and self._loop.is_running():
@@ -177,6 +199,12 @@ class AudioCapture:
         self._loop = loop or asyncio.get_event_loop()
         logger.info("Starting AudioCapture microphone stream (target sr=%d Hz)...", self.sample_rate)
 
+        uid = os.getuid() if hasattr(os, "getuid") else 1000
+        if "XDG_RUNTIME_DIR" not in os.environ:
+            os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
+        if "PULSE_SERVER" not in os.environ and os.path.exists(f"/run/user/{uid}/pulse/native"):
+            os.environ["PULSE_SERVER"] = f"unix:/run/user/{uid}/pulse/native"
+
         backend_candidates = [
             ("PulseAudio", [miniaudio.Backend.PULSEAUDIO]),
             ("ALSA", [miniaudio.Backend.ALSA]),
@@ -184,9 +212,10 @@ class AudioCapture:
         ]
 
         device = None
+        bound_ch = 1
         for name, backends in backend_candidates:
-            # Try 1 channel then 2 channels (webcam mic or USB mic might require stereo)
-            for ch in [1, 2]:
+            # Try stereo first (many USB/webcam mics only negotiate 2ch), then mono
+            for ch in [2, 1]:
                 try:
                     d = miniaudio.CaptureDevice(
                         input_format=miniaudio.SampleFormat.SIGNED16,
@@ -196,6 +225,7 @@ class AudioCapture:
                         backends=backends,
                     )
                     device = d
+                    bound_ch = ch
                     logger.info("AudioCapture initialized via %s (%s, %d ch, %d Hz).", name, d.backend, ch, self.sample_rate)
                     break
                 except Exception as e:
@@ -205,6 +235,7 @@ class AudioCapture:
 
         if device is not None:
             self.device = device
+            self.nchannels = bound_ch
             self._running = True
             gen = self._capture_generator()
             next(gen)  # Prime generator
