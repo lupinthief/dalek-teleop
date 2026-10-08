@@ -252,7 +252,22 @@ async def handle_signaling_ws(request: web.Request):
                     offer = RTCSessionDescription(sdp=data["sdp"], type=data["type"])
                     await pc.setRemoteDescription(offer)
                     answer = await pc.createAnswer()
-                    await pc.setLocalDescription(answer)
+                    # Enhance Opus SDP with optimized telephony/voice parameters:
+                    # - stereo=0 / sprop-stereo=0: single channel mono voice
+                    # - maxaveragebitrate=64000: generous voice bitrate
+                    # - cbr=1: constant bitrate (no packet size dips)
+                    # - useinbandfec=1: in-band forward error correction for lost packets
+                    # - ptime=20 / minptime=20 / maxptime=20: stable 20ms packet intervals
+                    sdp_lines = []
+                    for line in answer.sdp.splitlines():
+                        sdp_lines.append(line)
+                        if line.startswith("a=rtpmap:") and "opus/48000" in line:
+                            pt = line.split()[0].split(":")[1]
+                            sdp_lines.append(
+                                f"a=fmtp:{pt} minptime=20;maxptime=20;useinbandfec=1;stereo=0;sprop-stereo=0;maxaveragebitrate=64000;cbr=1"
+                            )
+                    enhanced_answer = RTCSessionDescription(sdp="\r\n".join(sdp_lines) + "\r\n", type=answer.type)
+                    await pc.setLocalDescription(enhanced_answer)
                     await ws.send_json({
                         "action": "answer",
                         "sdp": pc.localDescription.sdp,
