@@ -104,13 +104,13 @@ class PeerSession:
             if track.kind == "audio":
                 self._audio_pump_task = asyncio.create_task(self._process_incoming_audio(track))
 
-        # Add Dalek mic track so operator can hear through the phone
-        self.mic_track = DalekMicrophoneTrack(capture)
-        self.pc.addTrack(self.mic_track)
-
-        # Add Dalek camera track so operator sees live webcam feed
+        # Add Dalek camera track first, matching browser transceiver order (video m-line 0)
         self.camera_track = DalekCameraTrack(camera)
         self.pc.addTrack(self.camera_track)
+
+        # Add Dalek mic track second, matching browser transceiver order (audio m-line 1)
+        self.mic_track = DalekMicrophoneTrack(capture)
+        self.pc.addTrack(self.mic_track)
 
     async def _process_incoming_audio(self, track: RemoteStreamTrack):
         """Continuously decode incoming phone voice, normalize audio, and stream to speaker."""

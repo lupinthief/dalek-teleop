@@ -33,6 +33,7 @@ class CameraManager:
         self.width = width
         self.height = height
         self.fps = fps
+        self.flip_180 = os.environ.get("DALEK_CAMERA_FLIP_180", "true").lower() in ("true", "1", "yes")
 
         self.cap: cv2.VideoCapture | None = None
         self._running = False
@@ -116,6 +117,8 @@ class CameraManager:
 
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
+                    if self.flip_180:
+                        frame = cv2.rotate(frame, cv2.ROTATE_180)
                     if frame.shape[1] != self.width or frame.shape[0] != self.height:
                         frame = cv2.resize(frame, (self.width, self.height))
                     with self._lock:

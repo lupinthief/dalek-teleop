@@ -31,8 +31,11 @@ SAMPLE_RATE = 48000
 FRAME_MS = 20
 FRAME_SAMPLES = int(SAMPLE_RATE * (FRAME_MS / 1000.0))  # 960 samples per frame
 
-# Audio Modulation Bypass (disabled by default so audio is clean passthrough; davros handles its own modulation)
+# Audio Modulation in teleops: disabled so clean audio is piped directly
+# to phone.py's modulation chain via the Unix domain socket.
 ENABLE_MODULATION = os.environ.get("DALEK_ENABLE_MODULATION", "false").lower() in ("true", "1", "yes")
+TELEOP_SOCKET_PATH = os.environ.get("DALEK_TELEOP_SOCKET", "/tmp/dalek_teleop_audio.sock")
+TELEOP_CMD_SOCKET_PATH = os.environ.get("DALEK_TELEOP_CMD_SOCKET", "/tmp/dalek_teleop_cmd.sock")
 
 # Effect Defaults (matched to davros phone.py / dalek.py)
 MOD_FREQ = float(os.environ.get("DALEK_MOD_FREQ", "30.0"))     # Ring modulator carrier in Hz

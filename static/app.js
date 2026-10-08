@@ -19,6 +19,14 @@ let isMuted = false;
 let isTransmitting = false;
 let isConnected = false;
 
+// Virtual Joystick State
+let joystickVisible = false;
+let joystickActive = false;
+let joystickTouchId = null;
+let currentRx = 0.0;
+let currentRy = 0.0;
+let joystickSendInterval = null;
+
 // DOM Elements
 const authView = document.getElementById('auth-view');
 const dashboardView = document.getElementById('dashboard-view');
@@ -35,14 +43,26 @@ const liveDot = document.getElementById('live-dot');
 const callToggleBtn = document.getElementById('call-toggle-btn');
 const callBtnIcon = document.getElementById('call-btn-icon');
 const callBtnText = document.getElementById('call-btn-text');
+const stickToggleBtn = document.getElementById('stick-toggle-btn');
+const stickToggleIcon = document.getElementById('stick-toggle-icon');
+const stickToggleText = document.getElementById('stick-toggle-text');
 const micMuteBtn = document.getElementById('mic-mute-btn');
 const muteIcon = document.getElementById('mute-icon');
 const muteText = document.getElementById('mute-text');
 const logoutBtn = document.getElementById('logout-btn');
 
+const joystickContainer = document.getElementById('joystick-container');
+const joystickBase = document.getElementById('joystick-base');
+const joystickStick = document.getElementById('joystick-stick');
+const joystickReadout = document.getElementById('joystick-readout');
+
 const outboundMeterFill = document.getElementById('outbound-meter-fill');
 const inboundMeterFill = document.getElementById('inbound-meter-fill');
 const remoteAudio = document.getElementById('remote-audio');
+
+const volumeSlider = document.getElementById('volume-slider');
+const volumeValue = document.getElementById('volume-value');
+const volumeIcon = document.getElementById('volume-icon');
 
 
 // ------------------------------------------------------------------ Init & Auth Flow
@@ -51,6 +71,9 @@ async function checkAuthStatus() {
     const res = await fetch('/api/status');
     const data = await res.json();
     if (data.authenticated) {
+      if (typeof data.volume === 'number') {
+        updateVolumeUI(data.volume, data.muted);
+      }
       showDashboard();
     } else {
       showLogin();
@@ -208,6 +231,8 @@ async function connectComms() {
           type: msg.type,
           sdp: msg.sdp
         }));
+      } else if (msg.action === 'volume_update') {
+        updateVolumeUI(msg.volume, msg.muted);
       }
     };
 
@@ -227,6 +252,14 @@ async function connectComms() {
 
 function disconnectComms() {
   stopTransmitting();
+  if (localMediaStream) {
+    localMediaStream.getTracks().forEach(t => t.stop());
+    localMediaStream = null;
+  }
+  if (meterAnimationId) {
+    cancelAnimationFrame(meterAnimationId);
+    meterAnimationId = null;
+  }
   isConnected = false;
   setConnectionStatus('DISCONNECTED', '');
   videoStatusText.innerText = 'STANDBY';
@@ -251,6 +284,21 @@ function disconnectComms() {
 }
 
 
+// Unlock remote audio on any user interaction with the dashboard
+function tryUnlockRemoteAudio() {
+  if (remoteAudio && remoteAudio.srcObject && remoteAudio.paused) {
+    remoteAudio.play().then(() => {
+      console.log("Remote Dalek room audio successfully unmuted/playing");
+    }).catch(e => {
+      console.log("Audio unlock attempt deferred:", e);
+    });
+  }
+}
+
+document.addEventListener("pointerdown", tryUnlockRemoteAudio, { passive: true });
+document.addEventListener("touchstart", tryUnlockRemoteAudio, { passive: true });
+document.addEventListener("click", tryUnlockRemoteAudio, { passive: true });
+
 // ------------------------------------------------------------------ Voice Transmit Toggle
 callToggleBtn.addEventListener('click', async () => {
   // Ensure remote audio playback is unlocked on user interaction (required by iOS Safari/Chrome autoplay policy)
@@ -273,20 +321,25 @@ async function startTransmitting() {
   }
 
   try {
-    localMediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        sampleRate: 48000,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false
-    });
-
-    setupAudioContext();
+    if (!localMediaStream) {
+      localMediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 48000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false
+      });
+      setupAudioContext();
+    }
 
     const audioTrack = localMediaStream.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = true;
+    }
+
     if (audioTransceiver && audioTransceiver.sender) {
       await audioTransceiver.sender.replaceTrack(audioTrack);
     } else {
@@ -299,6 +352,10 @@ async function startTransmitting() {
     }
 
     isTransmitting = true;
+    isMuted = false;
+    muteIcon.innerText = '🎤';
+    muteText.innerText = 'Mute';
+    micMuteBtn.style.backgroundColor = '';
     callToggleBtn.classList.add('transmitting');
     callBtnIcon.innerText = '🛑';
     callBtnText.innerText = 'Stop';
@@ -318,22 +375,11 @@ async function stopTransmitting() {
   callBtnText.innerText = 'Transmit';
   micMuteBtn.disabled = true;
 
-  if (peerConnection) {
-    if (audioTransceiver && audioTransceiver.sender) {
-      try {
-        await audioTransceiver.sender.replaceTrack(null);
-      } catch (e) {}
-    }
-  }
-
+  // Instead of tearing down the track or replacing with null (which breaks
+  // the peer connection's remote receive loop on aiortc without renegotiation),
+  // mute the track so RTP continues streaming silence smoothly.
   if (localMediaStream) {
-    localMediaStream.getTracks().forEach(t => t.stop());
-    localMediaStream = null;
-  }
-
-  if (meterAnimationId) {
-    cancelAnimationFrame(meterAnimationId);
-    meterAnimationId = null;
+    localMediaStream.getAudioTracks().forEach(t => t.enabled = false);
   }
 
   disableScreenKeepAlive();
@@ -475,5 +521,205 @@ function updateAudioMeters() {
 checkAuthStatus();
 
 
-// Start checking auth status on page load
-checkAuthStatus();
+// ------------------------------------------------------------------ Virtual Joystick
+function sendJoystickCommand(rx, ry) {
+  if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+    try {
+      signalingSocket.send(JSON.stringify({
+        action: 'joystick',
+        rx: Math.round(rx * 1000) / 1000,
+        ry: Math.round(ry * 1000) / 1000
+      }));
+    } catch (e) {
+      console.warn('Failed to send joystick command:', e);
+    }
+  }
+}
+
+function startJoystickLoop() {
+  if (!joystickSendInterval) {
+    joystickSendInterval = setInterval(() => {
+      if (joystickActive || currentRx !== 0 || currentRy !== 0) {
+        sendJoystickCommand(currentRx, currentRy);
+      }
+    }, 50); // 20 Hz
+  }
+}
+
+function stopJoystickLoop() {
+  if (joystickSendInterval) {
+    clearInterval(joystickSendInterval);
+    joystickSendInterval = null;
+  }
+  sendJoystickCommand(0, 0);
+}
+
+function toggleJoystick(forcedState) {
+  joystickVisible = forcedState !== undefined ? forcedState : !joystickVisible;
+  if (joystickVisible) {
+    joystickContainer.classList.remove('hidden');
+    stickToggleBtn.classList.add('active');
+    startJoystickLoop();
+  } else {
+    resetJoystick();
+    stopJoystickLoop();
+    joystickContainer.classList.add('hidden');
+    stickToggleBtn.classList.remove('active');
+  }
+}
+
+stickToggleBtn.addEventListener('click', () => {
+  toggleJoystick();
+});
+
+function updateStickPosition(clientX, clientY) {
+  const rect = joystickBase.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  const maxRadius = (rect.width / 2) - 10; // keep knob inside rim
+
+  let dx = clientX - centerX;
+  let dy = clientY - centerY;
+  const dist = Math.hypot(dx, dy);
+
+  if (dist > maxRadius) {
+    dx = (dx / dist) * maxRadius;
+    dy = (dy / dist) * maxRadius;
+  }
+
+  joystickStick.style.transform = `translate(${dx}px, ${dy}px)`;
+
+  // Normalized values: rx in [-1, 1], ry in [-1, 1]
+  // On gamepads: push up is ry > 0, push right is rx > 0
+  // In DOM: moving up is dy < 0, so ry = -dy / maxRadius
+  let normRx = dx / maxRadius;
+  let normRy = -dy / maxRadius;
+
+  // Small deadzone (0.05)
+  if (Math.abs(normRx) < 0.05) normRx = 0.0;
+  if (Math.abs(normRy) < 0.05) normRy = 0.0;
+
+  currentRx = Math.max(-1.0, Math.min(1.0, normRx));
+  currentRy = Math.max(-1.0, Math.min(1.0, normRy));
+
+  joystickReadout.innerText = `HEAD: ${currentRx.toFixed(2)} | EYE: ${currentRy.toFixed(2)}`;
+}
+
+function resetJoystick() {
+  joystickActive = false;
+  joystickTouchId = null;
+  currentRx = 0.0;
+  currentRy = 0.0;
+  joystickStick.style.transform = 'translate(0px, 0px)';
+  joystickReadout.innerText = 'HEAD: 0.00 | EYE: 0.00';
+  sendJoystickCommand(0.0, 0.0);
+}
+
+// Touch events for mobile
+joystickBase.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (e.targetTouches.length > 0) {
+    const touch = e.targetTouches[0];
+    joystickTouchId = touch.identifier;
+    joystickActive = true;
+    updateStickPosition(touch.clientX, touch.clientY);
+  }
+}, { passive: false });
+
+window.addEventListener('touchmove', (e) => {
+  if (!joystickActive) return;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const touch = e.changedTouches[i];
+    if (touch.identifier === joystickTouchId) {
+      updateStickPosition(touch.clientX, touch.clientY);
+      break;
+    }
+  }
+}, { passive: false });
+
+window.addEventListener('touchend', (e) => {
+  if (!joystickActive) return;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === joystickTouchId) {
+      resetJoystick();
+      break;
+    }
+  }
+});
+
+window.addEventListener('touchcancel', (e) => {
+  if (joystickActive) {
+    resetJoystick();
+  }
+});
+
+// Mouse events for desktop testing
+joystickBase.addEventListener('mousedown', (e) => {
+  joystickActive = true;
+  updateStickPosition(e.clientX, e.clientY);
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (joystickActive && joystickTouchId === null) {
+    updateStickPosition(e.clientX, e.clientY);
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  if (joystickActive && joystickTouchId === null) {
+    resetJoystick();
+  }
+});
+
+
+// ------------------------------------------------------------------ Volume Control
+function updateVolumeUI(volume, muted) {
+  if (volumeSlider) {
+    volumeSlider.value = volume;
+  }
+  if (volumeValue) {
+    volumeValue.innerText = muted ? 'MUTED' : `${volume}%`;
+  }
+  if (volumeIcon) {
+    volumeIcon.innerText = muted || volume === 0 ? '🔇' : (volume < 50 ? '🔉' : '🔊');
+  }
+}
+
+let volumeDebounce = null;
+function sendVolumeCommand(vol, mute = null) {
+  if (volumeDebounce) clearTimeout(volumeDebounce);
+  volumeDebounce = setTimeout(() => {
+    if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+      signalingSocket.send(JSON.stringify({
+        action: 'volume',
+        volume: vol,
+        muted: mute
+      }));
+    } else {
+      // Fallback to REST API
+      fetch('/api/volume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume: vol, muted: mute })
+      })
+      .then(res => res.json())
+      .then(data => updateVolumeUI(data.volume, data.muted))
+      .catch(err => console.debug('Failed to set volume via API:', err));
+    }
+  }, 50);
+}
+
+if (volumeSlider) {
+  volumeSlider.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    updateVolumeUI(val, false);
+    sendVolumeCommand(val, false);
+  });
+}
+
+if (volumeIcon) {
+  volumeIcon.addEventListener('click', () => {
+    const isCurrentlyMuted = volumeValue.innerText === 'MUTED';
+    sendVolumeCommand(parseInt(volumeSlider.value, 10), !isCurrentlyMuted);
+  });
+}

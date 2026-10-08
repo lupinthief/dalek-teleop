@@ -16,6 +16,7 @@ import asyncio
 import collections
 import logging
 import os
+import socket
 import threading
 from typing import Optional
 import miniaudio
@@ -27,7 +28,7 @@ logger = logging.getLogger("teleop.audio")
 
 
 class AudioPlayer:
-    """Streams 48kHz audio frames out to the default speaker sink with continuous buffering."""
+    """Streams 48kHz audio frames to phone.py socket bridge or fallback speaker sink."""
 
     def __init__(self, sample_rate: int = config.SAMPLE_RATE, max_buffer_msec: int = 250):
         self.sample_rate = sample_rate
@@ -36,7 +37,10 @@ class AudioPlayer:
         self.buffer = bytearray()
         self.lock = threading.Lock()
         self.device: Optional[miniaudio.PlaybackDevice] = None
+        self._device_started = False
         self._running = False
+        self.socket_path = config.TELEOP_SOCKET_PATH
+        self.client_sock: Optional[socket.socket] = None
 
     def _stream_generator(self):
         """Generator yielding continuous PCM 16-bit bytes to miniaudio playback device."""
@@ -101,16 +105,22 @@ class AudioPlayer:
             self.nchannels = bound_ch
             self.max_buffer_bytes = int(self.sample_rate * (250 / 1000.0) * 2 * self.nchannels)
             self._running = True
-            gen = self._stream_generator()
-            next(gen)  # Prime generator
-            self.device.start(gen)
-            logger.info("AudioPlayer playback device active.")
+            # If the phone.py IPC bridge socket is active, we do not start the local
+            # fallback playback device so clean/unmodulated audio is never output locally.
+            if not os.path.exists(self.socket_path):
+                gen = self._stream_generator()
+                next(gen)  # Prime generator
+                self.device.start(gen)
+                self._device_started = True
+                logger.info("AudioPlayer fallback playback device active.")
+            else:
+                logger.info("AudioPlayer socket bridge %s detected; local fallback device idle.", self.socket_path)
         else:
             logger.warning("Could not initialize audio playback device. Playback will be mocked/logged.")
             self._running = True
 
     def write(self, frame: np.ndarray):
-        """Queue audio frame for continuous output."""
+        """Queue audio frame for continuous output via socket bridge or local device."""
         if not self._running:
             return
         if frame.ndim > 1:
@@ -121,11 +131,46 @@ class AudioPlayer:
         else:
             pcm_int16 = frame
 
+        # If phone.py bridge socket exists, send mono 16-bit PCM frame directly
+        if os.path.exists(self.socket_path):
+            if self.client_sock is None:
+                try:
+                    self.client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                except Exception as e:
+                    logger.debug("Failed to create unix dgram socket: %s", e)
+            if self.client_sock is not None:
+                try:
+                    self.client_sock.sendto(pcm_int16.tobytes(), self.socket_path)
+                    # Clean audio successfully directed to modulated phone bridge;
+                    # do NOT duplicate to local miniaudio buffer.
+                    return
+                except Exception as e:
+                    logger.debug("Failed to send audio to %s: %s", self.socket_path, e)
+                    try:
+                        self.client_sock.close()
+                    except Exception:
+                        pass
+                    self.client_sock = None
+
+        # Fallback to local miniaudio device if bridge socket not available
+        # Ensure fallback generator is started if needed
+        if self.device is not None and not self._device_started:
+            try:
+                gen = self._stream_generator()
+                next(gen)
+                self.device.start(gen)
+                self._device_started = True
+                logger.info("Started local fallback audio output device.")
+            except Exception as e:
+                logger.debug("Could not start fallback device: %s", e)
+
         # If audio device opened in stereo, duplicate mono to both channels
         if self.nchannels == 2:
-            pcm_int16 = np.repeat(pcm_int16, 2)
+            pcm_device = np.repeat(pcm_int16, 2)
+        else:
+            pcm_device = pcm_int16
 
-        data = pcm_int16.tobytes()
+        data = pcm_device.tobytes()
 
         with self.lock:
             # If buffer exceeds max limit (250ms), drop oldest data to avoid lag
@@ -136,6 +181,13 @@ class AudioPlayer:
 
     def stop(self):
         self._running = False
+        self._device_started = False
+        if self.client_sock is not None:
+            try:
+                self.client_sock.close()
+            except Exception:
+                pass
+            self.client_sock = None
         if self.device is not None:
             try:
                 self.device.stop()
@@ -159,6 +211,11 @@ class AudioCapture:
         self._loop = None
         self._chunk_samples = config.FRAME_SAMPLES
         self._partial_buffer = bytearray()
+        self._duck_factor = 1.0
+
+    def set_duck_factor(self, factor: float):
+        """Scale factor applied to mic frames [0.0 = muted, 1.0 = full gain]."""
+        self._duck_factor = max(0.0, min(1.0, float(factor)))
 
     def _capture_generator(self):
         """Generator receiving captured audio bytes via .send(data)."""
@@ -177,7 +234,7 @@ class AudioCapture:
                     if self.nchannels == 2:
                         pcm_int16 = ((pcm_int16[0::2].astype(np.int32) + pcm_int16[1::2].astype(np.int32)) // 2).astype(np.int16)
 
-                    pcm_float = pcm_int16.astype(np.float32) / 32768.0
+                    pcm_float = (pcm_int16.astype(np.float32) / 32768.0) * self._duck_factor
 
                     if self._loop and self._loop.is_running():
                         def _push_to_queues(frame):
