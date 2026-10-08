@@ -37,6 +37,8 @@ active_sessions: set[PeerSession] = set()
 
 # Control datagram socket for forwarding virtual joystick commands to dalek.py
 cmd_sock = None
+_unduck_task: Optional[asyncio.Task] = None
+
 try:
     import socket
     cmd_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -44,13 +46,31 @@ except Exception as e:
     logger.warning("Could not initialize command socket: %s", e)
 
 def forward_joystick_cmd(rx: float, ry: float):
-    global cmd_sock
+    global cmd_sock, _unduck_task
     # Dynamically duck the Dalek room mic sensitivity when head/eye motors are active
     if abs(rx) > 0.05 or abs(ry) > 0.05:
-        # Heavily attenuate or mute mic during head motor movement
+        # Cancel any pending unduck and immediately mute Dalek room mic
+        if _unduck_task and not _unduck_task.done():
+            _unduck_task.cancel()
+            _unduck_task = None
         capture.set_duck_factor(0.0)
     else:
-        capture.set_duck_factor(1.0)
+        # When stick returns to center (0, 0), add a 0.2s hold buffer before restoring gain
+        # to ensure head/eye motor runout noise has completely stopped
+        async def _delayed_unduck():
+            try:
+                await asyncio.sleep(0.2)
+                capture.set_duck_factor(1.0)
+            except asyncio.CancelledError:
+                pass
+
+        if _unduck_task and not _unduck_task.done():
+            _unduck_task.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+            _unduck_task = loop.create_task(_delayed_unduck())
+        except RuntimeError:
+            capture.set_duck_factor(1.0)
 
     if not cmd_sock:
         return
