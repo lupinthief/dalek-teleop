@@ -161,13 +161,46 @@ function setConnectionStatus(status, stateClass) {
 }
 
 
-// ------------------------------------------------------------------ WebRTC Comms (Video + Audio)
+// Audio constraints optimized for mobile WebRTC & Bluetooth earbuds (HFP/SCO):
+// - autoGainControl: false prevents Android/iOS telephony ducking and clipping.
+// - noiseSuppression: false prevents Bluetooth SCO audio squelching.
+// - echoCancellation: true handles feedback without crushing the frequency response.
+const AUDIO_CONSTRAINTS = {
+  channelCount: 1,
+  sampleRate: 48000,
+  echoCancellation: true,
+  noiseSuppression: false,
+  autoGainControl: false,
+};
+
+async function ensureLocalAudioStream() {
+  if (localMediaStream) return localMediaStream;
+  try {
+    localMediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: AUDIO_CONSTRAINTS,
+      video: false
+    });
+    // Start with mic muted so it does not transmit until Transmit is tapped
+    localMediaStream.getAudioTracks().forEach(t => t.enabled = false);
+    setupAudioContext();
+  } catch (err) {
+    console.warn('Could not pre-acquire microphone stream:', err);
+  }
+  return localMediaStream;
+}
+
+// ------------------------------------------------------------------ WebRTC Comms
 async function connectComms() {
   if (peerConnection) return;
 
   setConnectionStatus('CONNECTING...', 'connecting');
   videoStatusText.innerText = 'CONNECTING FEED...';
   liveDot.classList.remove('active');
+
+  // Attempt to acquire microphone before SDP offer so the Bluetooth audio profile
+  // is locked into bidirectional communication mode from the start (preventing
+  // on-the-fly A2DP -> SCO profile switches, volume drops, and ducking later).
+  await ensureLocalAudioStream();
 
   try {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -180,7 +213,17 @@ async function connectComms() {
 
       // Prepare transceivers: receive video from camera and send/recv audio
       peerConnection.addTransceiver('video', { direction: 'recvonly' });
-      audioTransceiver = peerConnection.addTransceiver('audio', { direction: 'sendrecv' });
+
+      // If local mic was acquired, bind its track immediately (muted) to audio transceiver
+      const initialAudioTrack = localMediaStream ? localMediaStream.getAudioTracks()[0] : null;
+      if (initialAudioTrack) {
+        audioTransceiver = peerConnection.addTransceiver(initialAudioTrack, {
+          direction: 'sendrecv',
+          streams: [localMediaStream]
+        });
+      } else {
+        audioTransceiver = peerConnection.addTransceiver('audio', { direction: 'sendrecv' });
+      }
 
       // Handle incoming remote media tracks (Dalek camera + Dalek room microphone)
       peerConnection.ontrack = (event) => {
@@ -322,14 +365,12 @@ async function startTransmitting() {
 
   try {
     if (!localMediaStream) {
+      await ensureLocalAudioStream();
+    }
+
+    if (!localMediaStream) {
       localMediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 48000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: AUDIO_CONSTRAINTS,
         video: false
       });
       setupAudioContext();
